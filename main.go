@@ -523,14 +523,15 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 		gs.logger.Printf("DEBUG: Rebasing with remote branch: %s\n", job.Branch)
 		rebaseCmd := exec.Command("git", "rebase", fmt.Sprintf("origin/%s", job.Branch))
 		rebaseCmd.Dir = job.RepoPath
-		if output, err := rebaseCmd.CombinedOutput(); err != nil {
+		if _, err := rebaseCmd.CombinedOutput(); err != nil {
 			// 如果 rebase 失败，中止它并尝试强制推送
 			abortCmd := exec.Command("git", "rebase", "--abort")
 			abortCmd.Dir = job.RepoPath
 			abortCmd.Run()
-			
+
 			// 使用强制推送
 			gs.logger.Printf("DEBUG: Force pushing to remote branch: %s\n", job.Branch)
+
 			pushCmd := exec.Command("git", "push", "-f", "origin", job.Branch)
 			pushCmd.Dir = job.RepoPath
 			if output, err := pushCmd.CombinedOutput(); err != nil {
