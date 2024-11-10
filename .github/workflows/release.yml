@@ -41,7 +41,7 @@ jobs:
                     
                     echo "Building for $GOOS/$GOARCH"
                     GOOS=$GOOS GOARCH=$GOARCH go build \
-                      -ldflags "-X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" \
+                      -ldflags "-X 'main.Version=$VERSION' -X 'main.BuildTime=$BUILD_TIME' -X 'main.GitCommit=$GIT_COMMIT'" \
                       -o build/$output_name
                   done
 
