@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -568,18 +569,33 @@ func main() {
 	// 首先显示版本信息
 	fmt.Printf("Git-Syncer %s (Build: %s, Commit: %s)\n", Version, BuildTime, GitCommit)
 
+	// 解析命令行参数
+	var daemon bool
+	flag.BoolVar(&daemon, "d", false, "Run as daemon in background")
+	flag.Parse()
+
+	args := flag.Args()
+
 	// 检查版本标志
-	if len(os.Args) == 2 && (os.Args[1] == "-v" || os.Args[1] == "--version") {
+	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version") {
 		return
 	}
 
-	if len(os.Args) != 2 {
-		fmt.Println("Usage: git-syncer <config_file>")
+	if len(args) != 1 {
+		fmt.Println("Usage: git-syncer [-d] <config_file>")
 		fmt.Println("       git-syncer --version")
 		os.Exit(1)
 	}
 
-	sync, err := NewGitSync(os.Args[1])
+	if daemon {
+		// 创建子进程
+		cmd := exec.Command(os.Args[0], args[0])
+		cmd.Start()
+		fmt.Printf("Git-Syncer is running in background with PID: %d\n", cmd.Process.Pid)
+		os.Exit(0)
+	}
+
+	sync, err := NewGitSync(args[0])
 	if err != nil {
 		log.Fatalf("Failed to create GitSync: %v", err)
 	}
