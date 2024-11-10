@@ -96,7 +96,6 @@ func TestSyncFiles(t *testing.T) {
 	gs := &GitSync{logger: createTestLogger()}
 	job := &Job{
 		SourcePath: filepath.Join(testDir, "source"),
-		RepoPath:   filepath.Join(testDir, "repo"),
 		Includes:   []string{"*.txt"},
 		Excludes:   []string{"*.tmp"},
 	}
@@ -146,7 +145,8 @@ func createTestFile(t *testing.T, path, content string) {
 
 func checkSyncedFiles(t *testing.T, job *Job) {
 	// 检查同步的文件
-	files, err := filepath.Glob(filepath.Join(job.RepoPath, "*.txt"))
+	repoPath := job.GetRepoPath()
+	files, err := filepath.Glob(filepath.Join(repoPath, "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func checkSyncedFiles(t *testing.T, job *Job) {
 	}
 
 	// 检查被排除的文件
-	excluded, err := filepath.Glob(filepath.Join(job.RepoPath, "*.tmp"))
+	excluded, err := filepath.Glob(filepath.Join(repoPath, "*.tmp"))
 	if err != nil {
 		t.Fatal(err)
 	}

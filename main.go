@@ -48,12 +48,16 @@ type Job struct {
 	Name       string   `yaml:"name"`
 	Schedule   string   `yaml:"schedule"`
 	SourcePath string   `yaml:"source_path"`
-	RepoPath   string   `yaml:"-"`
-	RemoteURL  string   `yaml:"remote_url,omitempty"`
-	Branch     string   `yaml:"branch,omitempty"`
-	Includes   []string `yaml:"includes,omitempty"`
-	Excludes   []string `yaml:"excludes,omitempty"`
-	Webhooks   []string `yaml:"webhooks,omitempty"`
+	RemoteURL  string   `yaml:"remote_url"`
+	Includes   []string `yaml:"includes"`
+	Excludes   []string `yaml:"excludes"`
+	Webhooks   []string `yaml:"webhooks"`
+	Branch     string   `yaml:"branch"`
+}
+
+// 添加一个获取仓库路径的辅助方法
+func (j *Job) GetRepoPath() string {
+	return filepath.Join(".git-syncer", j.Name)
 }
 
 // GitSync 同步器结构
@@ -263,7 +267,6 @@ func (gs *GitSync) initRepo(user *User, job *Job) error {
 
 	// 在当前目录下创建 .git-syncer/job-name 目录
 	repoDir := filepath.Join(currentDir, GitSyncerDir, sanitizePath(job.Name))
-	job.RepoPath = repoDir
 
 	gs.logger.Printf("DEBUG: Initializing repo - Path: %s, RemoteURL: %s\n", repoDir, job.RemoteURL)
 
@@ -369,7 +372,8 @@ func addCredentialsToURL(url, username, password string) string {
 
 // syncFiles 同步文件
 func (gs *GitSync) syncFiles(job *Job) error {
-	gs.logger.Printf("DEBUG: Syncing files from %s to %s\n", job.SourcePath, job.RepoPath)
+	repoPath := job.GetRepoPath()
+	gs.logger.Printf("DEBUG: Syncing files from %s to %s\n", job.SourcePath, repoPath)
 
 	return filepath.Walk(job.SourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -393,7 +397,7 @@ func (gs *GitSync) syncFiles(job *Job) error {
 		}
 
 		// 复制文件到仓库目录
-		destPath := filepath.Join(job.RepoPath, relPath)
+		destPath := filepath.Join(repoPath, relPath)
 		if err := gs.copyFile(path, destPath); err != nil {
 			return err
 		}
@@ -455,20 +459,26 @@ func (gs *GitSync) copyFile(src, dst string) error {
 
 // commitChanges 提交更改并推送到远程
 func (gs *GitSync) commitChanges(user *User, job *Job) error {
-	gs.logger.Printf("DEBUG: Starting commit process for job: %s on branch %s\n", job.Name, job.Branch)
+	repoPath := job.GetRepoPath()
+	gs.logger.Printf("DEBUG: Starting commit process for job: %s in directory: %s\n", job.Name, repoPath)
+
+	// 确保我们在正确的目录中操作
+	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+		return fmt.Errorf("repository directory does not exist: %s", repoPath)
+	}
 
 	// 检查 git 状态
 	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = job.RepoPath
-	output, err := cmd.CombinedOutput()
-	gs.logger.Printf("DEBUG: Git status output:\n%s", string(output))
-
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
 	if err != nil {
-		gs.logger.Printf("ERROR: Git status failed: %v\n", err)
+		gs.logger.Printf("ERROR: Git status failed in %s: %v\n", repoPath, err)
 		return fmt.Errorf("failed to check git status: %v", err)
 	}
 
-	if len(strings.TrimSpace(string(output))) == 0 {
+	gs.logger.Printf("DEBUG: Git status output in %s:\n%s", repoPath, string(output))
+
+	if len(output) == 0 {
 		gs.logger.Println("DEBUG: No changes to commit")
 		return nil
 	}
@@ -476,7 +486,7 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 	// 添加所有更改
 	gs.logger.Println("DEBUG: Adding changes to git")
 	addCmd := exec.Command("git", "add", ".")
-	addCmd.Dir = job.RepoPath
+	addCmd.Dir = repoPath
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		gs.logger.Printf("ERROR: Git add failed: %s\n", string(output))
 		return fmt.Errorf("git add failed: %v", err)
@@ -494,7 +504,7 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 
 	for _, cfg := range configCmds {
 		cmd := exec.Command("git", cfg.args...)
-		cmd.Dir = job.RepoPath
+		cmd.Dir = repoPath
 		if output, err := cmd.CombinedOutput(); err != nil {
 			gs.logger.Printf("ERROR: Failed to %s: %s\n", cfg.msg, string(output))
 			return fmt.Errorf("failed to %s: %v", cfg.msg, err)
@@ -505,7 +515,7 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 	commitMsg := fmt.Sprintf("Sync update by %s: %s", user.Username, time.Now().Format("2006-01-02 15:04:05"))
 	gs.logger.Printf("DEBUG: Committing with message: %s\n", commitMsg)
 	commitCmd := exec.Command("git", "commit", "-m", commitMsg)
-	commitCmd.Dir = job.RepoPath
+	commitCmd.Dir = repoPath
 	if output, err := commitCmd.CombinedOutput(); err != nil {
 		gs.logger.Printf("ERROR: Git commit failed: %s\n", string(output))
 		return fmt.Errorf("git commit failed: %v", err)
@@ -515,7 +525,7 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 		// 先获取远程更新
 		gs.logger.Printf("DEBUG: Fetching from remote\n")
 		fetchCmd := exec.Command("git", "fetch", "origin", job.Branch)
-		fetchCmd.Dir = job.RepoPath
+		fetchCmd.Dir = repoPath
 		if output, err := fetchCmd.CombinedOutput(); err != nil {
 			gs.logger.Printf("WARNING: Git fetch failed: %s\n", string(output))
 		}
@@ -523,18 +533,18 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 		// 尝试 rebase
 		gs.logger.Printf("DEBUG: Rebasing with remote branch: %s\n", job.Branch)
 		rebaseCmd := exec.Command("git", "rebase", fmt.Sprintf("origin/%s", job.Branch))
-		rebaseCmd.Dir = job.RepoPath
+		rebaseCmd.Dir = repoPath
 		if _, err := rebaseCmd.CombinedOutput(); err != nil {
 			// 如果 rebase 失败，中止它并尝试强制推送
 			abortCmd := exec.Command("git", "rebase", "--abort")
-			abortCmd.Dir = job.RepoPath
+			abortCmd.Dir = repoPath
 			abortCmd.Run()
 
 			// 使用强制推送
 			gs.logger.Printf("DEBUG: Force pushing to remote branch: %s\n", job.Branch)
 
 			pushCmd := exec.Command("git", "push", "-f", "origin", job.Branch)
-			pushCmd.Dir = job.RepoPath
+			pushCmd.Dir = repoPath
 			if output, err := pushCmd.CombinedOutput(); err != nil {
 				gs.logger.Printf("ERROR: Force push failed: %s\n", string(output))
 				return fmt.Errorf("git force push failed: %s, %v", string(output), err)
@@ -542,7 +552,7 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 		} else {
 			// 正常推送
 			pushCmd := exec.Command("git", "push", "origin", job.Branch)
-			pushCmd.Dir = job.RepoPath
+			pushCmd.Dir = repoPath
 			if output, err := pushCmd.CombinedOutput(); err != nil {
 				gs.logger.Printf("ERROR: Git push failed: %s\n", string(output))
 				return fmt.Errorf("git push failed: %s, %v", string(output), err)
