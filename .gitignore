@@ -31,3 +31,11 @@ go.work
 .Trashes 
 
 *.log
+
+*.txt
+.git-syncer/
+
+test/
+tests/
+
+__debug_bin*

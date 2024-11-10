@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -13,6 +12,18 @@ import (
 
 	"github.com/go-co-op/gocron"
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	// 这些变量会在构建时通过 -ldflags 注入
+	Version   = "dev"
+	BuildTime = "unknown"
+	GitCommit = "none"
+)
+
+// 在 package main 声明后添加常量定义
+const (
+	GitSyncerDir = ".git-syncer" // 同步仓库的基础目录
 )
 
 // Config 定义配置文件结构
@@ -36,8 +47,9 @@ type Job struct {
 	Name       string   `yaml:"name"`
 	Schedule   string   `yaml:"schedule"`
 	SourcePath string   `yaml:"source_path"`
-	RepoPath   string   `yaml:"repo_path"`
+	RepoPath   string   `yaml:"-"`
 	RemoteURL  string   `yaml:"remote_url,omitempty"`
+	Branch     string   `yaml:"branch,omitempty"`
 	Includes   []string `yaml:"includes,omitempty"`
 	Excludes   []string `yaml:"excludes,omitempty"`
 	Webhooks   []string `yaml:"webhooks,omitempty"`
@@ -84,6 +96,24 @@ func NewGitSync(configPath string) (*GitSync, error) {
 	for _, webhook := range config.Webhooks {
 		if err := gs.webhookManager.RegisterWebhook(webhook); err != nil {
 			return nil, fmt.Errorf("failed to register webhook %s: %v", webhook.Name, err)
+		}
+	}
+
+	// 初始化所有用户的仓库
+	for _, user := range config.Users {
+		// 设置用户的Git配置
+		if err := gs.setupUserGitConfig(&user); err != nil {
+			logger.Printf("Failed to setup git config for user %s: %v\n", user.Username, err)
+			continue
+		}
+
+		// 初始化每个任务的仓库
+		for _, job := range user.Jobs {
+			if err := gs.initRepo(&user, &job); err != nil {
+				logger.Printf("Failed to initialize repository for job %s: %v\n", job.Name, err)
+				continue
+			}
+			logger.Printf("Successfully initialized repository for job: %s\n", job.Name)
 		}
 	}
 
@@ -224,8 +254,29 @@ func (gs *GitSync) syncJob(user *User, job *Job) {
 
 // initRepo 初始化或检查Git仓库
 func (gs *GitSync) initRepo(user *User, job *Job) error {
-	repoDir := filepath.Join(job.RepoPath)
+	// 使用当前目录作为基础目录
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %v", err)
+	}
+
+	// 在当前目录下创建 .git-syncer/job-name 目录
+	repoDir := filepath.Join(currentDir, GitSyncerDir, sanitizePath(job.Name))
+	job.RepoPath = repoDir
+
+	gs.logger.Printf("DEBUG: Initializing repo - Path: %s, RemoteURL: %s\n", repoDir, job.RemoteURL)
+
+	// 如果未指定分支，使用默认分支
+	if job.Branch == "" {
+		job.Branch = "main"
+	}
+	gs.logger.Printf("DEBUG: Using branch: %s\n", job.Branch)
+
+	isNewRepo := false
+
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
+		gs.logger.Println("DEBUG: .git directory not found, initializing new repository")
+
 		// 创建目录
 		if err := os.MkdirAll(repoDir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory: %v", err)
@@ -238,21 +289,72 @@ func (gs *GitSync) initRepo(user *User, job *Job) error {
 			return fmt.Errorf("git init failed: %v", err)
 		}
 
-		// 如果配置了远程仓库，添加远程源
-		if job.RemoteURL != "" {
-			remoteURL := job.RemoteURL
-			// 如果提供了用户名和密码，将其添加到URL中
-			if user.GitUsername != "" && user.GitPassword != "" {
-				remoteURL = addCredentialsToURL(job.RemoteURL, user.GitUsername, user.GitPassword)
-			}
+		isNewRepo = true
+	}
 
-			cmd = exec.Command("git", "remote", "add", "origin", remoteURL)
+	// 如果配置了远程库
+	if job.RemoteURL != "" {
+		remoteURL := job.RemoteURL
+		if user.GitUsername != "" && user.GitPassword != "" {
+			remoteURL = addCredentialsToURL(job.RemoteURL, user.GitUsername, user.GitPassword)
+		}
+
+		// 检查是否已有 origin
+		checkRemote := exec.Command("git", "remote", "get-url", "origin")
+		checkRemote.Dir = repoDir
+		if err := checkRemote.Run(); err != nil {
+			// 如果没有 origin，添加它
+			cmd := exec.Command("git", "remote", "add", "origin", remoteURL)
 			cmd.Dir = repoDir
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("failed to add remote: %v", err)
 			}
 		}
+
+		if isNewRepo {
+			// 创建 README.md
+			readmePath := filepath.Join(repoDir, "README.md")
+			if err := os.WriteFile(readmePath, []byte("# Git Sync Repository\n https://github.com/bestk/git-syncer.git"), 0644); err != nil {
+				return fmt.Errorf("failed to create README: %v", err)
+			}
+
+			// 添加并提交 README，设置指定分支
+			cmds := [][]string{
+				{"git", "add", "README.md"},
+				{"git", "commit", "-m", "Initial commit"},
+				{"git", "branch", "-M", job.Branch}, // 使用配置的分支名
+			}
+
+			for _, cmdArgs := range cmds {
+				cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+				cmd.Dir = repoDir
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to execute %v: %v", cmdArgs, err)
+				}
+			}
+		} else {
+			// 如果不是新仓库，确保在正确的分支上
+			// 先检查分支是否存在
+			checkBranch := exec.Command("git", "rev-parse", "--verify", job.Branch)
+			checkBranch.Dir = repoDir
+			if err := checkBranch.Run(); err != nil {
+				// 分支不存在，创建新分支
+				createBranch := exec.Command("git", "checkout", "-b", job.Branch)
+				createBranch.Dir = repoDir
+				if err := createBranch.Run(); err != nil {
+					return fmt.Errorf("failed to create branch %s: %v", job.Branch, err)
+				}
+			} else {
+				// 分支存在，切换到该分支
+				checkout := exec.Command("git", "checkout", job.Branch)
+				checkout.Dir = repoDir
+				if err := checkout.Run(); err != nil {
+					return fmt.Errorf("failed to checkout branch %s: %v", job.Branch, err)
+				}
+			}
+		}
 	}
+
 	return nil
 }
 
@@ -266,6 +368,8 @@ func addCredentialsToURL(url, username, password string) string {
 
 // syncFiles 同步文件
 func (gs *GitSync) syncFiles(job *Job) error {
+	gs.logger.Printf("DEBUG: Syncing files from %s to %s\n", job.SourcePath, job.RepoPath)
+
 	return filepath.Walk(job.SourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -287,7 +391,7 @@ func (gs *GitSync) syncFiles(job *Job) error {
 			return nil
 		}
 
-		// 复制文件
+		// 复制文件到仓库目录
 		destPath := filepath.Join(job.RepoPath, relPath)
 		if err := gs.copyFile(path, destPath); err != nil {
 			return err
@@ -350,50 +454,117 @@ func (gs *GitSync) copyFile(src, dst string) error {
 
 // commitChanges 提交更改并推送到远程
 func (gs *GitSync) commitChanges(user *User, job *Job) error {
-	// 检查是否有更改
+	gs.logger.Printf("DEBUG: Starting commit process for job: %s on branch %s\n", job.Name, job.Branch)
+
+	// 检查 git 状态
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = job.RepoPath
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
+	gs.logger.Printf("DEBUG: Git status output:\n%s", string(output))
+
 	if err != nil {
+		gs.logger.Printf("ERROR: Git status failed: %v\n", err)
 		return fmt.Errorf("failed to check git status: %v", err)
 	}
 
 	if len(strings.TrimSpace(string(output))) == 0 {
-		gs.logger.Println("No changes to commit")
+		gs.logger.Println("DEBUG: No changes to commit")
 		return nil
 	}
 
 	// 添加所有更改
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = job.RepoPath
-	if err := cmd.Run(); err != nil {
+	gs.logger.Println("DEBUG: Adding changes to git")
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = job.RepoPath
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		gs.logger.Printf("ERROR: Git add failed: %s\n", string(output))
 		return fmt.Errorf("git add failed: %v", err)
+	}
+
+	// 设置 Git 配置
+	gs.logger.Printf("DEBUG: Setting git config for user: %s\n", user.Username)
+	configCmds := []struct {
+		args []string
+		msg  string
+	}{
+		{[]string{"config", "user.name", user.Username}, "set user.name"},
+		{[]string{"config", "user.email", user.Email}, "set user.email"},
+	}
+
+	for _, cfg := range configCmds {
+		cmd := exec.Command("git", cfg.args...)
+		cmd.Dir = job.RepoPath
+		if output, err := cmd.CombinedOutput(); err != nil {
+			gs.logger.Printf("ERROR: Failed to %s: %s\n", cfg.msg, string(output))
+			return fmt.Errorf("failed to %s: %v", cfg.msg, err)
+		}
 	}
 
 	// 提交更改
 	commitMsg := fmt.Sprintf("Sync update by %s: %s", user.Username, time.Now().Format("2006-01-02 15:04:05"))
-	cmd = exec.Command("git", "commit", "-m", commitMsg)
-	cmd.Dir = job.RepoPath
-	if err := cmd.Run(); err != nil {
+	gs.logger.Printf("DEBUG: Committing with message: %s\n", commitMsg)
+	commitCmd := exec.Command("git", "commit", "-m", commitMsg)
+	commitCmd.Dir = job.RepoPath
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		gs.logger.Printf("ERROR: Git commit failed: %s\n", string(output))
 		return fmt.Errorf("git commit failed: %v", err)
 	}
 
-	// 如果配置了远程仓库，推送更改
 	if job.RemoteURL != "" {
-		cmd = exec.Command("git", "push", "origin", "master")
-		cmd.Dir = job.RepoPath
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("git push failed: %v", err)
+		// 确保在正确的分支上
+		gs.logger.Printf("DEBUG: Checking out branch: %s\n", job.Branch)
+		checkoutCmd := exec.Command("git", "checkout", job.Branch)
+		checkoutCmd.Dir = job.RepoPath
+		if output, err := checkoutCmd.CombinedOutput(); err != nil {
+			gs.logger.Printf("ERROR: Failed to checkout branch %s: %s\n", job.Branch, string(output))
+			return fmt.Errorf("failed to checkout branch: %v", err)
 		}
-		gs.logger.Println("Changes pushed to remote repository")
+
+		// 先尝试 pull
+		gs.logger.Printf("DEBUG: Pulling from remote branch: %s\n", job.Branch)
+		pullCmd := exec.Command("git", "pull", "origin", job.Branch, "--rebase")
+		pullCmd.Dir = job.RepoPath
+		if output, err := pullCmd.CombinedOutput(); err != nil {
+			gs.logger.Printf("WARNING: Git pull failed: %s\n", string(output))
+			// 继续执行，因为可能是首次推送
+		}
+
+		// 推送更改
+		gs.logger.Printf("DEBUG: Pushing to remote branch: %s\n", job.Branch)
+		pushCmd := exec.Command("git", "push", "-u", "origin", job.Branch)
+		pushCmd.Dir = job.RepoPath
+		if output, err := pushCmd.CombinedOutput(); err != nil {
+			gs.logger.Printf("ERROR: Git push failed: %s\n", string(output))
+			return fmt.Errorf("git push failed: %s, %v", string(output), err)
+		}
+		gs.logger.Printf("DEBUG: Successfully pushed to remote repository on branch %s\n", job.Branch)
 	}
 
 	return nil
 }
 
+// 添加辅助函数来清理路径名
+func sanitizePath(name string) string {
+	// 移除或替换不安全的字符
+	unsafe := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", " "}
+	safe := name
+	for _, char := range unsafe {
+		safe = strings.ReplaceAll(safe, char, "-")
+	}
+	return safe
+}
+
 func main() {
+	// 检查版本标志
+	if len(os.Args) == 2 && (os.Args[1] == "-v" || os.Args[1] == "--version") {
+		fmt.Printf("Git-Syncer Version: %s\nBuild Time: %s\nGit Commit: %s\n",
+			Version, BuildTime, GitCommit)
+		return
+	}
+
 	if len(os.Args) != 2 {
-		fmt.Println("Usage: git-sync <config_file>")
+		fmt.Println("Usage: git-syncer <config_file>")
+		fmt.Println("       git-syncer --version")
 		os.Exit(1)
 	}
 

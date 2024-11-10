@@ -1,0 +1,11 @@
+users:
+    - username: ''
+      email: ''
+      jobs:
+          - name: 'test-job'
+            schedule: '* * * * *'
+            source_path: './test'
+            remote_url: 'https://github.com/bestk/test.git'
+            repo_path: './testdata/repo'
+            includes: ['*.txt']
+            excludes: ['*.tmp']

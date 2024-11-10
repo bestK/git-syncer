@@ -9,6 +9,8 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
             - name: Set up Go
               uses: actions/setup-go@v4
@@ -17,26 +19,36 @@ jobs:
 
             - name: Build Multi-Platform Binaries
               run: |
+                  # 获取版本号 (从 tag)
+                  VERSION=${GITHUB_REF#refs/tags/}
+                  # 获取构建时间
+                  BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
+                  # 获取 git commit hash
+                  GIT_COMMIT=$(git rev-parse --short HEAD)
+
                   platforms=("windows/amd64" "windows/386" "linux/amd64" "linux/386" "darwin/amd64" "darwin/arm64")
+
                   for platform in "${platforms[@]}"
                   do
                     platform_split=(${platform//\// })
                     GOOS=${platform_split[0]}
                     GOARCH=${platform_split[1]}
                     output_name=gitsyncer-$GOOS-$GOARCH
+                    
                     if [ $GOOS = "windows" ]; then
                       output_name+='.exe'
                     fi
                     
                     echo "Building for $GOOS/$GOARCH"
-                    GOOS=$GOOS GOARCH=$GOARCH go build -o build/$output_name
+                    GOOS=$GOOS GOARCH=$GOARCH go build \
+                      -ldflags "-X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" \
+                      -o build/$output_name
                   done
 
-            - name: Upload Release Assets
-              run: |
-                  cd build
-                  for file in *; do
-                    gh release upload ${{ github.event.release.tag_name }} "$file"
-                  done
+            - name: Create Release
+              uses: softprops/action-gh-release@v1
+              with:
+                  files: |
+                      build/*
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
