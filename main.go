@@ -511,31 +511,40 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 	}
 
 	if job.RemoteURL != "" {
-		// 确保在正确的分支上
-		gs.logger.Printf("DEBUG: Checking out branch: %s\n", job.Branch)
-		checkoutCmd := exec.Command("git", "checkout", job.Branch)
-		checkoutCmd.Dir = job.RepoPath
-		if output, err := checkoutCmd.CombinedOutput(); err != nil {
-			gs.logger.Printf("ERROR: Failed to checkout branch %s: %s\n", job.Branch, string(output))
-			return fmt.Errorf("failed to checkout branch: %v", err)
+		// 先获取远程更新
+		gs.logger.Printf("DEBUG: Fetching from remote\n")
+		fetchCmd := exec.Command("git", "fetch", "origin", job.Branch)
+		fetchCmd.Dir = job.RepoPath
+		if output, err := fetchCmd.CombinedOutput(); err != nil {
+			gs.logger.Printf("WARNING: Git fetch failed: %s\n", string(output))
 		}
 
-		// 先尝试 pull
-		gs.logger.Printf("DEBUG: Pulling from remote branch: %s\n", job.Branch)
-		pullCmd := exec.Command("git", "pull", "origin", job.Branch, "--rebase")
-		pullCmd.Dir = job.RepoPath
-		if output, err := pullCmd.CombinedOutput(); err != nil {
-			gs.logger.Printf("WARNING: Git pull failed: %s\n", string(output))
-			// 继续执行，因为可能是首次推送
-		}
-
-		// 推送更改
-		gs.logger.Printf("DEBUG: Pushing to remote branch: %s\n", job.Branch)
-		pushCmd := exec.Command("git", "push", "-u", "origin", job.Branch)
-		pushCmd.Dir = job.RepoPath
-		if output, err := pushCmd.CombinedOutput(); err != nil {
-			gs.logger.Printf("ERROR: Git push failed: %s\n", string(output))
-			return fmt.Errorf("git push failed: %s, %v", string(output), err)
+		// 尝试 rebase
+		gs.logger.Printf("DEBUG: Rebasing with remote branch: %s\n", job.Branch)
+		rebaseCmd := exec.Command("git", "rebase", fmt.Sprintf("origin/%s", job.Branch))
+		rebaseCmd.Dir = job.RepoPath
+		if output, err := rebaseCmd.CombinedOutput(); err != nil {
+			// 如果 rebase 失败，中止它并尝试强制推送
+			abortCmd := exec.Command("git", "rebase", "--abort")
+			abortCmd.Dir = job.RepoPath
+			abortCmd.Run()
+			
+			// 使用强制推送
+			gs.logger.Printf("DEBUG: Force pushing to remote branch: %s\n", job.Branch)
+			pushCmd := exec.Command("git", "push", "-f", "origin", job.Branch)
+			pushCmd.Dir = job.RepoPath
+			if output, err := pushCmd.CombinedOutput(); err != nil {
+				gs.logger.Printf("ERROR: Force push failed: %s\n", string(output))
+				return fmt.Errorf("git force push failed: %s, %v", string(output), err)
+			}
+		} else {
+			// 正常推送
+			pushCmd := exec.Command("git", "push", "origin", job.Branch)
+			pushCmd.Dir = job.RepoPath
+			if output, err := pushCmd.CombinedOutput(); err != nil {
+				gs.logger.Printf("ERROR: Git push failed: %s\n", string(output))
+				return fmt.Errorf("git push failed: %s, %v", string(output), err)
+			}
 		}
 		gs.logger.Printf("DEBUG: Successfully pushed to remote repository on branch %s\n", job.Branch)
 	}
@@ -555,10 +564,11 @@ func sanitizePath(name string) string {
 }
 
 func main() {
+	// 首先显示版本信息
+	fmt.Printf("Git-Syncer %s (Build: %s, Commit: %s)\n", Version, BuildTime, GitCommit)
+
 	// 检查版本标志
 	if len(os.Args) == 2 && (os.Args[1] == "-v" || os.Args[1] == "--version") {
-		fmt.Printf("Git-Syncer Version: %s\nBuild Time: %s\nGit Commit: %s\n",
-			Version, BuildTime, GitCommit)
 		return
 	}
 
