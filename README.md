@@ -49,10 +49,6 @@ See [config.example.yaml](config.example.yaml) for configuration details.
 ./git-syncer config.yaml
 ```
 
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
 ## Configuration Example (config.yaml)
 
 ```yaml
@@ -122,3 +118,7 @@ webhooks:
             "username": "{{.User.Username}}"
           }
 ```
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

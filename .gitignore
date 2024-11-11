@@ -19,7 +19,7 @@ go.work
 
 # IDE specific files
 .idea/
-.vscode/
+# .vscode/
 *.swp
 *.swo
 

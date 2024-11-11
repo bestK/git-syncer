@@ -25,6 +25,14 @@ var (
 // 在 package main 声明后添加常量定义
 const (
 	GitSyncerDir = ".git-syncer" // 同步仓库的基础目录
+	Banner       = `
+	______ _ _      _____                            
+   / ____/(_) /_   / ___/__  ______  ________  _____
+  / / __/ / __/   \__ \/ / / / __ \/ ___/ _ \/ ___/
+ / /_/ / / /_    ___/ / /_/ / / / / /__/  __/ /    
+ \____/_/\__/   /____/\__, /_/ /_/\___/\___/_/     
+                     /____/                          
+`
 )
 
 // Config 定义配置文件结构
@@ -45,14 +53,15 @@ type User struct {
 
 // Job 定义单个同步任务的配置
 type Job struct {
-	Name       string   `yaml:"name"`
-	Schedule   string   `yaml:"schedule"`
-	SourcePath string   `yaml:"source_path"`
-	RemoteURL  string   `yaml:"remote_url"`
-	Includes   []string `yaml:"includes"`
-	Excludes   []string `yaml:"excludes"`
-	Webhooks   []string `yaml:"webhooks"`
-	Branch     string   `yaml:"branch"`
+	Name          string   `yaml:"name"`
+	Schedule      string   `yaml:"schedule"`
+	SourcePath    string   `yaml:"source_path"`
+	RemoteURL     string   `yaml:"remote_url"`
+	Includes      []string `yaml:"includes"`
+	Excludes      []string `yaml:"excludes"`
+	Webhooks      []string `yaml:"webhooks"`
+	Branch        string   `yaml:"branch"`
+	MergeStrategy string   `yaml:"merge_strategy"` // 新增：合并策略配置
 }
 
 // 添加一个获取仓库路径的辅助方法
@@ -277,9 +286,8 @@ func (gs *GitSync) initRepo(user *User, job *Job) error {
 	gs.logger.Printf("DEBUG: Using branch: %s\n", job.Branch)
 
 	isNewRepo := false
-
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
-		gs.logger.Println("DEBUG: .git directory not found, initializing new repository")
+		gs.logger.Printf("DEBUG: Initializing new repository at %s\n", repoDir)
 
 		// 创建目录
 		if err := os.MkdirAll(repoDir, 0755); err != nil {
@@ -294,6 +302,8 @@ func (gs *GitSync) initRepo(user *User, job *Job) error {
 		}
 
 		isNewRepo = true
+	} else {
+		gs.logger.Printf("DEBUG: Using existing repository at %s\n", repoDir)
 	}
 
 	// 如果配置了远程库
@@ -316,25 +326,11 @@ func (gs *GitSync) initRepo(user *User, job *Job) error {
 		}
 
 		if isNewRepo {
-			// 创建 README.md
-			readmePath := filepath.Join(repoDir, "README.md")
-			if err := os.WriteFile(readmePath, []byte("# Git Sync Repository\n https://github.com/bestk/git-syncer.git"), 0644); err != nil {
-				return fmt.Errorf("failed to create README: %v", err)
-			}
-
-			// 添加并提交 README，设置指定分支
-			cmds := [][]string{
-				{"git", "add", "README.md"},
-				{"git", "commit", "-m", "Initial commit"},
-				{"git", "branch", "-M", job.Branch}, // 使用配置的分支名
-			}
-
-			for _, cmdArgs := range cmds {
-				cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-				cmd.Dir = repoDir
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("failed to execute %v: %v", cmdArgs, err)
-				}
+			// 设置分支
+			cmd := exec.Command("git", "branch", "-M", job.Branch)
+			cmd.Dir = repoDir
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to set branch %s: %v", job.Branch, err)
 			}
 		} else {
 			// 如果不是新仓库，确保在正确的分支上
@@ -530,37 +526,70 @@ func (gs *GitSync) commitChanges(user *User, job *Job) error {
 			gs.logger.Printf("WARNING: Git fetch failed: %s\n", string(output))
 		}
 
-		// 尝试 rebase
-		gs.logger.Printf("DEBUG: Rebasing with remote branch: %s\n", job.Branch)
-		rebaseCmd := exec.Command("git", "rebase", fmt.Sprintf("origin/%s", job.Branch))
-		rebaseCmd.Dir = repoPath
-		if _, err := rebaseCmd.CombinedOutput(); err != nil {
-			// 如果 rebase 失败，中止它并尝试强制推送
-			abortCmd := exec.Command("git", "rebase", "--abort")
-			abortCmd.Dir = repoPath
-			abortCmd.Run()
-
-			// 使用强制推送
-			gs.logger.Printf("DEBUG: Force pushing to remote branch: %s\n", job.Branch)
-
-			pushCmd := exec.Command("git", "push", "-f", "origin", job.Branch)
-			pushCmd.Dir = repoPath
-			if output, err := pushCmd.CombinedOutput(); err != nil {
-				gs.logger.Printf("ERROR: Force push failed: %s\n", string(output))
-				return fmt.Errorf("git force push failed: %s, %v", string(output), err)
+		// 根据合策略处理
+		switch strings.ToLower(job.MergeStrategy) {
+		case "rebase":
+			// 使用 rebase 策略
+			if err := gs.rebaseAndPush(repoPath, job); err != nil {
+				return err
 			}
-		} else {
-			// 正常推送
-			pushCmd := exec.Command("git", "push", "origin", job.Branch)
-			pushCmd.Dir = repoPath
-			if output, err := pushCmd.CombinedOutput(); err != nil {
-				gs.logger.Printf("ERROR: Git push failed: %s\n", string(output))
-				return fmt.Errorf("git push failed: %s, %v", string(output), err)
+		case "force":
+			// 使用强制推送策略
+			if err := gs.forcePush(repoPath, job); err != nil {
+				return err
+			}
+		default:
+			// 默认使用普通推送
+			if err := gs.normalPush(repoPath, job); err != nil {
+				return err
 			}
 		}
 		gs.logger.Printf("DEBUG: Successfully pushed to remote repository on branch %s\n", job.Branch)
 	}
 
+	return nil
+}
+
+// 添加以下辅助方法
+
+// rebaseAndPush 执行 rebase 并推送
+func (gs *GitSync) rebaseAndPush(repoPath string, job *Job) error {
+	gs.logger.Printf("DEBUG: Rebasing with remote branch: %s\n", job.Branch)
+	rebaseCmd := exec.Command("git", "rebase", fmt.Sprintf("origin/%s", job.Branch))
+	rebaseCmd.Dir = repoPath
+	if output, err := rebaseCmd.CombinedOutput(); err != nil {
+		gs.logger.Printf("ERROR: Rebase failed: %s\n", string(output))
+		// 中止 rebase
+		abortCmd := exec.Command("git", "rebase", "--abort")
+		abortCmd.Dir = repoPath
+		abortCmd.Run()
+		return fmt.Errorf("git rebase failed: %v", err)
+	}
+
+	return gs.normalPush(repoPath, job)
+}
+
+// forcePush 执行强制推送
+func (gs *GitSync) forcePush(repoPath string, job *Job) error {
+	gs.logger.Printf("DEBUG: Force pushing to remote branch: %s\n", job.Branch)
+	pushCmd := exec.Command("git", "push", "-f", "origin", job.Branch)
+	pushCmd.Dir = repoPath
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		gs.logger.Printf("ERROR: Force push failed: %s\n", string(output))
+		return fmt.Errorf("git force push failed: %v", err)
+	}
+	return nil
+}
+
+// normalPush 执行普通推送
+func (gs *GitSync) normalPush(repoPath string, job *Job) error {
+	gs.logger.Printf("DEBUG: Pushing to remote branch: %s\n", job.Branch)
+	pushCmd := exec.Command("git", "push", "origin", job.Branch)
+	pushCmd.Dir = repoPath
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		gs.logger.Printf("ERROR: Push failed: %s\n", string(output))
+		return fmt.Errorf("git push failed: %v", err)
+	}
 	return nil
 }
 
@@ -575,37 +604,70 @@ func sanitizePath(name string) string {
 	return safe
 }
 
-func main() {
-	// 首先显示版本信息
-	fmt.Printf("Git-Syncer %s (Build: %s, Commit: %s)\n", Version, BuildTime, GitCommit)
+var (
+	// 版本相关标志
+	showVersion bool
+	// daemon 模式标志
+	daemon bool
+	// 配置文件路径
+	configFile *string
+	// 帮助标志
+	help bool
+)
 
-	// 解析命令行参数
-	var daemon bool
+func main() {
+	// 设置帮助标志，两个标志共享同一个变量
+	flag.BoolVar(&help, "h", false, "Show help information")
+	flag.BoolVar(&help, "help", false, "Show help information (same as -h)")
+
 	flag.BoolVar(&daemon, "d", false, "Run as daemon in background")
+	flag.BoolVar(&daemon, "daemon", false, "Run as daemon in background")
+
+	flag.BoolVar(&showVersion, "v", false, "Show version information")
+	flag.BoolVar(&showVersion, "version", false, "Show version information (same as -v)")
+
 	flag.Parse()
 
-	args := flag.Args()
-
-	// 检查版本标志
-	if len(args) == 1 && (args[0] == "-v" || args[0] == "--version") {
+	// 检查帮助标志
+	if len(os.Args) == 1 || help {
+		fmt.Print(Banner)
+		fmt.Printf("Git-Syncer %s\n\n", Version)
+		fmt.Println("Usage:")
+		fmt.Printf("  %s [options]\n\n", os.Args[0])
+		fmt.Println("Options:")
+		flag.PrintDefaults()
 		return
 	}
 
-	if len(args) != 1 {
-		fmt.Println("Usage: git-syncer [-d] <config_file>")
-		fmt.Println("       git-syncer --version")
-		os.Exit(1)
+	// 检查版本标志
+	if showVersion {
+		// 显示 banner
+		fmt.Print(Banner)
+		// 显示版本信息
+		fmt.Printf("Git-Syncer %s (Build: %s, Commit: %s)\n", Version, BuildTime, GitCommit)
+		return
 	}
 
 	if daemon {
 		// 创建子进程
-		cmd := exec.Command(os.Args[0], args[0])
+		cmd := exec.Command(os.Args[0], flag.Args()...)
 		cmd.Start()
 		fmt.Printf("Git-Syncer is running in background with PID: %d\n", cmd.Process.Pid)
 		os.Exit(0)
 	}
 
-	sync, err := NewGitSync(args[0])
+	if configFile == nil {
+		fmt.Println("No config file provided, using default: config.yml")
+		// 检查 config.yml 是否存在
+		if _, err := os.Stat("config.yml"); os.IsNotExist(err) {
+			fmt.Println("Default config file not found, please provide a valid config file with -c option")
+			os.Exit(1)
+		}
+		configFile = flag.String("c", "config.yml", "Path to config file")
+	}
+
+	// 使用配置文件标志
+	sync, err := NewGitSync(*configFile)
 	if err != nil {
 		log.Fatalf("Failed to create GitSync: %v", err)
 	}

@@ -15,6 +15,7 @@ users:
             source_path: './docs' # 源文件路径
             remote_url: 'https://github.com/user/docs.git' # 远程仓库地址
             branch: 'main' # Git分支（可选，默认main）
+            merge_strategy: 'rebase' # 合并策略（可选，默认normal）
             includes: # 文件包含规则（可选）
                 - '*.md'
                 - '*.txt'
