@@ -13,6 +13,7 @@ import (
 
 	"runtime"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/go-co-op/gocron"
 	"github.com/sevlyar/go-daemon"
 	"gopkg.in/yaml.v2"
@@ -385,30 +386,67 @@ func (gs *GitSync) syncFiles(job *Job) error {
 		return err
 	}
 
+	// Normalize source and repo paths
+	sourcePath := filepath.ToSlash(job.SourcePath)
 	repoPath := job.GetRepoPath()
-	gs.logger.Printf("DEBUG: Syncing files from %s to %s\n", job.SourcePath, repoPath)
 
-	return filepath.Walk(job.SourcePath, func(path string, info os.FileInfo, err error) error {
+	// Get absolute path of working directory
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %v", err)
+	}
+
+	// Normalize matching pattern
+	pattern := normalizeSourcePath(sourcePath)
+	gs.logger.Printf("DEBUG: Using pattern: %s\n", pattern)
+
+	// Use filepath.Walk to traverse directory
+	var matches []string
+	err = filepath.Walk(filepath.Join(workDir, filepath.Dir(pattern)), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
-		}
-
-		// 跳过目录
-		if info.IsDir() {
+			gs.logger.Printf("WARNING: Failed to access path %s: %v\n", path, err)
 			return nil
 		}
 
-		// 获取相对路径
-		relPath, err := filepath.Rel(job.SourcePath, path)
+		// Convert to relative path
+		relPath, err := filepath.Rel(workDir, path)
 		if err != nil {
-			return err
-		}
-
-		// 检查文件是否应该被同步
-		if !gs.shouldSync(relPath, job.Includes, job.Excludes) {
+			gs.logger.Printf("WARNING: Cannot get relative path for %s: %v\n", path, err)
 			return nil
 		}
 
+		// Convert to forward slash path for matching
+		relPath = filepath.ToSlash(relPath)
+
+		// Check if matches pattern
+		matched, err := doublestar.Match(pattern, relPath)
+		if err != nil {
+			gs.logger.Printf("WARNING: Pattern matching failed for %s: %v\n", relPath, err)
+			return nil
+		}
+
+		if matched && !info.IsDir() {
+			gs.logger.Printf("DEBUG: Found matching file: %s\n", relPath)
+			matches = append(matches, path)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to traverse directory: %v", err)
+	}
+
+	if len(matches) == 0 {
+		gs.logger.Printf("WARNING: No matching files found for pattern: %s\n", pattern)
+		return nil
+	}
+
+	// Process matching files
+	for _, path := range matches {
+		relPath, _ := filepath.Rel(workDir, path)
+		relPath = filepath.ToSlash(relPath)
+
+		// Determine destination path
 		var destPath string
 		switch {
 		case job.KeepStructure:
@@ -419,21 +457,30 @@ func (gs *GitSync) syncFiles(job *Job) error {
 			destPath = filepath.Join(repoPath, filepath.Base(path))
 		}
 
-		if err := gs.copyFile(path, destPath); err != nil {
-			return err
+		// Create destination directory
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			gs.logger.Printf("WARNING: Failed to create directory %s: %v\n", filepath.Dir(destPath), err)
+			continue
 		}
 
-		gs.logger.Printf("Synced file: %s to %s\n", relPath, destPath)
-		return nil
-	})
+		if err := gs.copyFile(path, destPath); err != nil {
+			gs.logger.Printf("WARNING: Failed to copy file %s: %v\n", path, err)
+			continue
+		}
+
+		gs.logger.Printf("Successfully synced file: %s to %s\n", relPath, destPath)
+	}
+
+	return nil
 }
 
 // shouldSync 检查文件是否应该被同步
 func (gs *GitSync) shouldSync(path string, includes, excludes []string) bool {
 	// 首先检查排除规则
 	for _, exclude := range excludes {
-		matched, err := filepath.Match(exclude, path)
+		matched, err := doublestar.Match(exclude, path)
 		if err == nil && matched {
+			gs.logger.Printf("DEBUG: file %s excluded by rule %s\n", path, exclude)
 			return false
 		}
 	}
@@ -445,7 +492,7 @@ func (gs *GitSync) shouldSync(path string, includes, excludes []string) bool {
 
 	// 检查包含规则
 	for _, include := range includes {
-		matched, err := filepath.Match(include, path)
+		matched, err := doublestar.Match(include, path)
 		if err == nil && matched {
 			return true
 		}
@@ -738,4 +785,27 @@ func main() {
 	if err := sync.Run(); err != nil {
 		log.Fatalf("Failed to run GitSync: %v", err)
 	}
+}
+
+// 更新辅助函数来处理路径
+func normalizeSourcePath(path string) string {
+	// Convert backslashes to forward slashes
+	path = filepath.ToSlash(path)
+
+	// Remove leading ./
+	if strings.HasPrefix(path, "./") {
+		path = path[2:]
+	}
+
+	// Ensure pattern is correct
+	if !strings.Contains(path, "*") {
+		// If no wildcard, add /** to match all files
+		if strings.HasSuffix(path, "/") {
+			path = path + "**"
+		} else {
+			path = path + "/**"
+		}
+	}
+
+	return path
 }

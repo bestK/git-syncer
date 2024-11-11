@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.7.1 // indirect
 	github.com/google/uuid v1.4.0 // indirect
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
