@@ -1,6 +1,5 @@
 #!/bin/bash
 
-<<<<<<< HEAD
 # 检查是否有 -p 参数
 USE_PROXY=false
 while getopts "p" opt; do
