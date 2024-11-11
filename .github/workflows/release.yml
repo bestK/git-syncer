@@ -23,6 +23,10 @@ jobs:
                   BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
                   GIT_COMMIT=$(git rev-parse --short HEAD)
 
+                  # 创建构建目录
+                  mkdir -p build
+                  mkdir -p temp
+
                   platforms=("windows/amd64" "windows/386" "linux/amd64" "linux/386" "darwin/amd64" "darwin/arm64")
 
                   for platform in "${platforms[@]}"
@@ -30,27 +34,32 @@ jobs:
                     platform_split=(${platform//\// })
                     GOOS=${platform_split[0]}
                     GOARCH=${platform_split[1]}
-                    output_name=git-syncer-$GOOS-$GOARCH
+                    output_dir=git-syncer-$GOOS-$GOARCH
+                    output_name=git-syncer
                     
-                    mkdir -p temp/$output_name
+                    # 创建临时目录
+                    mkdir -p "temp/$output_dir"
                     
                     if [ $GOOS = "windows" ]; then
                       output_name+='.exe'
-                      cp shell/windows/*.bat temp/$output_name/
+                      # 复制 Windows 批处理文件
+                      cp shell/windows/*.bat "temp/$output_dir/"
                     fi
                     
                     echo "Building for $GOOS/$GOARCH"
                     GOOS=$GOOS GOARCH=$GOARCH go build \
                       -ldflags "-X 'main.Version=$VERSION' -X 'main.BuildTime=$BUILD_TIME' -X 'main.GitCommit=$GIT_COMMIT'" \
-                      -o temp/$output_name/$output_name
+                      -o "temp/$output_dir/$output_name"
                     
-                    cp config.example.yaml temp/$output_name/
+                    # 复制配置文件示例
+                    cp config.example.yaml "temp/$output_dir/"
                     
+                    # 打包
                     cd temp
                     if [ $GOOS = "windows" ]; then
-                      zip -r ../build/$output_name.zip $output_name
+                      zip -r "../build/$output_dir.zip" "$output_dir"
                     else
-                      tar -czf ../build/$output_name.tar.gz $output_name
+                      tar -czf "../build/$output_dir.tar.gz" "$output_dir"
                     fi
                     cd ..
                   done
