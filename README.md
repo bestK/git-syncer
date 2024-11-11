@@ -15,6 +15,12 @@ Git-Syncer is a tool that automatically syncs local files to Git repositories ba
 
 ## Installation
 
+```bash
+curl -L https://github.com/bestk/git-syncer/shell/install.sh | bash
+```
+
+## Development
+
 1. Clone the repository:
 
 ```bash
