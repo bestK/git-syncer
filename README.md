@@ -88,6 +88,8 @@ users:
             source_path: './docs' # 源文件路径
             remote_url: 'https://github.com/user/docs.git' # 远程仓库地址
             branch: 'main' # Git分支（可选，默认main）
+            remote_path: 'docs' # 远程仓库中的目标路径（可选）
+            keep_structure: false # 是否保持原目录结构（可选，默认false）
             includes: # 文件包含规则（可选）
                 - '*.md'
                 - '*.txt'

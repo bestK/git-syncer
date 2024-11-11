@@ -62,6 +62,8 @@ type Job struct {
 	Webhooks      []string `yaml:"webhooks"`
 	Branch        string   `yaml:"branch"`
 	MergeStrategy string   `yaml:"merge_strategy"` // 新增：合并策略配置
+	RemotePath    string   `yaml:"remote_path"`    // 远程仓库中的目标路径
+	KeepStructure bool     `yaml:"keep_structure"` // 是否保持原目录结构
 }
 
 // 添加一个获取仓库路径的辅助方法
@@ -366,8 +368,20 @@ func addCredentialsToURL(url, username, password string) string {
 	return url
 }
 
+// validateJob 验证任务配置
+func (gs *GitSync) validateJob(job *Job) error {
+	if job.RemotePath != "" && job.KeepStructure {
+		return fmt.Errorf("remote_path and keep_structure cannot be used together")
+	}
+	return nil
+}
+
 // syncFiles 同步文件
 func (gs *GitSync) syncFiles(job *Job) error {
+	if err := gs.validateJob(job); err != nil {
+		return err
+	}
+
 	repoPath := job.GetRepoPath()
 	gs.logger.Printf("DEBUG: Syncing files from %s to %s\n", job.SourcePath, repoPath)
 
@@ -392,13 +406,21 @@ func (gs *GitSync) syncFiles(job *Job) error {
 			return nil
 		}
 
-		// 复制文件到仓库目录
-		destPath := filepath.Join(repoPath, relPath)
+		var destPath string
+		switch {
+		case job.KeepStructure:
+			destPath = filepath.Join(repoPath, relPath)
+		case job.RemotePath != "":
+			destPath = filepath.Join(repoPath, job.RemotePath, filepath.Base(path))
+		default:
+			destPath = filepath.Join(repoPath, filepath.Base(path))
+		}
+
 		if err := gs.copyFile(path, destPath); err != nil {
 			return err
 		}
 
-		gs.logger.Printf("Synced file: %s\n", relPath)
+		gs.logger.Printf("Synced file: %s to %s\n", relPath, destPath)
 		return nil
 	})
 }
