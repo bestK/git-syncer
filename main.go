@@ -610,7 +610,7 @@ var (
 	// daemon 模式标志
 	daemon bool
 	// 配置文件路径
-	configFile *string
+	configFile string
 	// 帮助标志
 	help bool
 )
@@ -625,6 +625,7 @@ func main() {
 
 	flag.BoolVar(&showVersion, "v", false, "Show version information")
 	flag.BoolVar(&showVersion, "version", false, "Show version information (same as -v)")
+	flag.StringVar(&configFile, "c", "config.yml", "Path to config file")
 
 	flag.Parse()
 
@@ -656,18 +657,18 @@ func main() {
 		os.Exit(0)
 	}
 
-	if configFile == nil {
+	if configFile == "" {
 		fmt.Println("No config file provided, using default: config.yml")
 		// 检查 config.yml 是否存在
 		if _, err := os.Stat("config.yml"); os.IsNotExist(err) {
 			fmt.Println("Default config file not found, please provide a valid config file with -c option")
 			os.Exit(1)
 		}
-		configFile = flag.String("c", "config.yml", "Path to config file")
+
 	}
 
 	// 使用配置文件标志
-	sync, err := NewGitSync(*configFile)
+	sync, err := NewGitSync(configFile)
 	if err != nil {
 		log.Fatalf("Failed to create GitSync: %v", err)
 	}
