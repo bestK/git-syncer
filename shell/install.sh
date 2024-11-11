@@ -1,5 +1,6 @@
 #!/bin/bash
 
+<<<<<<< HEAD
 # 检查是否有 -p 参数
 USE_PROXY=false
 while getopts "p" opt; do
@@ -25,6 +26,10 @@ else
   # 不使用代理
   DOWNLOAD_URL="https://github.com/bestk/git-syncer/releases/download/$VERSION/git-syncer-$GOOS-$GOARCH"
 fi
+=======
+# 获取最新版本
+VERSION=$(curl -s https://api.github.com/repos/bestk/git-syncer/releases/latest | jq -r '.tag_name')
+>>>>>>> 51475677d8fa1629b893cf28846c7dacb4fc688d
 
 # 下载最新版本
 curl -L $DOWNLOAD_URL -o git-syncer
