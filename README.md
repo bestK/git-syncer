@@ -52,7 +52,20 @@ See [config.example.yaml](config.example.yaml) for configuration details.
 ## Usage
 
 ```bash
-./git-syncer config.yaml
+./git-syncer -c config.yaml
+
+./git-syncer -h
+
+Options:
+  -d	Run as daemon in background
+  -daemon
+    	Run as daemon in background
+  -h	Show help information
+  -help
+    	Show help information (same as -h)
+  -v	Show version information
+  -version
+    	Show version information (same as -v)
 ```
 
 ## Configuration Example (config.yaml)
