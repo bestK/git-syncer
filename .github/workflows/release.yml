@@ -19,11 +19,8 @@ jobs:
 
             - name: Build Multi-Platform Binaries
               run: |
-                  # 获取版本号 (从 tag)
                   VERSION=${GITHUB_REF#refs/tags/}
-                  # 获取构建时间
                   BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
-                  # 获取 git commit hash
                   GIT_COMMIT=$(git rev-parse --short HEAD)
 
                   platforms=("windows/amd64" "windows/386" "linux/amd64" "linux/386" "darwin/amd64" "darwin/arm64")
@@ -35,14 +32,27 @@ jobs:
                     GOARCH=${platform_split[1]}
                     output_name=git-syncer-$GOOS-$GOARCH
                     
+                    mkdir -p temp/$output_name
+                    
                     if [ $GOOS = "windows" ]; then
                       output_name+='.exe'
+                      cp shell/windows/*.bat temp/$output_name/
                     fi
                     
                     echo "Building for $GOOS/$GOARCH"
                     GOOS=$GOOS GOARCH=$GOARCH go build \
                       -ldflags "-X 'main.Version=$VERSION' -X 'main.BuildTime=$BUILD_TIME' -X 'main.GitCommit=$GIT_COMMIT'" \
-                      -o build/$output_name
+                      -o temp/$output_name/$output_name
+                    
+                    cp config.example.yaml temp/$output_name/
+                    
+                    cd temp
+                    if [ $GOOS = "windows" ]; then
+                      zip -r ../build/$output_name.zip $output_name
+                    else
+                      tar -czf ../build/$output_name.tar.gz $output_name
+                    fi
+                    cd ..
                   done
 
             - name: Create Release

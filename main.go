@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"runtime"
+
 	"github.com/go-co-op/gocron"
+	"github.com/sevlyar/go-daemon"
 	"gopkg.in/yaml.v2"
 )
 
@@ -268,7 +271,7 @@ func (gs *GitSync) syncJob(user *User, job *Job) {
 	gs.logger.Printf("Completed sync job: %s for user: %s\n", job.Name, user.Username)
 }
 
-// initRepo 初始化或检查Git仓库
+// initRepo 初始化检查Git仓库
 func (gs *GitSync) initRepo(user *User, job *Job) error {
 	// 使用当前目录作为基础目录
 	currentDir, err := os.Getwd()
@@ -626,28 +629,64 @@ func sanitizePath(name string) string {
 	return safe
 }
 
+func startDaemon() error {
+	if runtime.GOOS == "windows" {
+		// Windows: 使用简单的后台运行方案
+		cmd := exec.Command(os.Args[0], os.Args[1:]...)
+		cmd.Args = append(cmd.Args, "-nodaemon") // 防止递归
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start daemon: %v", err)
+		}
+		fmt.Println("Git-Syncer is running in background with PID:", cmd.Process.Pid)
+		return nil
+	}
+
+	// POSIX systems: 使用 go-daemon
+	cntxt := &daemon.Context{
+		PidFileName: "git-syncer.pid",
+		PidFilePerm: 0644,
+		LogFileName: "git-syncer-daemon.log",
+		LogFilePerm: 0640,
+		WorkDir:     "./",
+		Umask:       027,
+	}
+
+	d, err := cntxt.Reborn()
+	if err != nil {
+		return fmt.Errorf("unable to run: %v", err)
+	}
+	if d != nil {
+		fmt.Println("Git-Syncer daemon started. Check git-syncer-daemon.log for details")
+		return nil
+	}
+
+	defer cntxt.Release()
+	fmt.Print(Banner)
+	fmt.Printf("Git-Syncer %s daemon started\n", Version)
+	return nil
+}
+
 var (
 	// 版本相关标志
 	showVersion bool
 	// daemon 模式标志
-	daemon bool
+	daemonFlag bool
 	// 配置文件路径
 	configFile string
 	// 帮助标志
 	help bool
+	// 防止递归的标志
+	noDaemon bool
 )
 
 func main() {
-	// 设置帮助标志，两个标志共享同一个变量
-	flag.BoolVar(&help, "h", false, "Show help information")
-	flag.BoolVar(&help, "help", false, "Show help information (same as -h)")
 
-	flag.BoolVar(&daemon, "d", false, "Run as daemon in background")
-	flag.BoolVar(&daemon, "daemon", false, "Run as daemon in background")
-
+	flag.BoolVar(&daemonFlag, "d", false, "Run as daemon")
+	flag.BoolVar(&noDaemon, "nodaemon", false, "Internal flag to prevent recursive daemon")
 	flag.BoolVar(&showVersion, "v", false, "Show version information")
 	flag.BoolVar(&showVersion, "version", false, "Show version information (same as -v)")
 	flag.StringVar(&configFile, "c", "config.yml", "Path to config file")
+	flag.BoolVar(&help, "h", false, "Show help information")
 
 	flag.Parse()
 
@@ -671,12 +710,13 @@ func main() {
 		return
 	}
 
-	if daemon {
-		// 创建子进程
-		cmd := exec.Command(os.Args[0], flag.Args()...)
-		cmd.Start()
-		fmt.Printf("Git-Syncer is running in background with PID: %d\n", cmd.Process.Pid)
-		os.Exit(0)
+	if daemonFlag && !noDaemon {
+		if err := startDaemon(); err != nil {
+			log.Fatal("Failed to start daemon: ", err)
+		}
+		if runtime.GOOS == "windows" {
+			return // Windows 后台进程已启动，退出当前进程
+		}
 	}
 
 	if configFile == "" {
